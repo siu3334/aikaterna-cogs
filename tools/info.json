@@ -11,7 +11,9 @@
 		"manage_channels"
 	],
 	"requirements": [
-		"tabulate"
+		"rapidfuzz",
+		"tabulate",
+		"unidecode"
 	],
 	"short": "Mod and admin tools.",
 	"tags": [
