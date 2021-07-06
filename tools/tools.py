@@ -506,46 +506,20 @@ class Tools(commands.Cog):
         count = max(min(count, 25), 5)
         members = sorted(guild.members, key=lambda m: m.joined_at, reverse=True)[:count]
 
-        head1 = "{} newest members".format(count)
-        header = "{:>33}\n{}\n\n".format(head1, "-" * 57)
+        e = discord.Embed(title='New Members', colour=discord.Colour.green())
 
-        user_body = (
-            " {mem} ({memid})\n"
-            + " {spcs}Joined Guild    : {sp1}{join}\n"
-            + " {spcs}Account Created : {sp2}{created}\n\n"
-        )
-
-        disp = header
-        spcs = [" " * (len(m.name) // 2) for m in members]
-        smspc = min(spcs, key=lambda it: len(it))
-
-        def calculate_diff(date1, date2):
-            date1str, date2str = self._accurate_timedelta(date1), self._accurate_timedelta(date2)
-            date1sta, date2sta = date1str.split(" ")[0], date2str.split(" ")[0]
-
-            if len(date1sta) == len(date2sta):
-                return (0, 0)
-            else:
-                ret = len(date2sta) - len(date1sta)
-                return (abs(ret), 0 if ret > 0 else 1)
-
+        # Credits to Danny
         for member in members:
-            req = calculate_diff(member.joined_at, member.created_at)
-            sp1 = req[0] if req[1] == 0 else 0
-            sp2 = req[0] if req[1] == 1 else 0
+            body = f'Joined {self.format_relative(member.joined_at, "R")}\nCreated {self.format_relative(member.created_at, "R")}'
+            e.add_field(name=f'{member} (ID: {member.id})', value=body, inline=False)
 
-            disp += user_body.format(
-                mem=member.display_name,
-                memid=member.id,
-                join=self._accurate_timedelta(member.joined_at),
-                created=self._accurate_timedelta(member.created_at),
-                spcs=smspc,
-                sp1="0" * sp1,
-                sp2="0" * sp2,
-            )
+        await ctx.send(embed=e)
 
-        for page in pagify(disp, delims=["\n\n"]):
-            await ctx.send(box(page, lang=fm))
+    @staticmethod
+    def format_relative(dt: datetime.datetime, style: str = None):
+        if style is None:
+            return f'<t:{int(dt.timestamp())}>'
+        return f'<t:{int(dt.timestamp())}:{style}>'
 
     @commands.guild_only()
     @commands.command()
