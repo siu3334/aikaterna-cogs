@@ -1,14 +1,17 @@
 import asyncio
 import datetime
+import inspect
 import logging
-from dateutil import relativedelta
+import re
+from contextlib import suppress as sps
 from typing import Union
 
 import discord
+from dateutil import relativedelta
 from redbot.core import commands
-from redbot.core.utils.chat_formatting import box, bold, escape, pagify
+from redbot.core.utils.chat_formatting import bold, box, escape, pagify
 from redbot.core.utils.common_filters import filter_invites
-from redbot.core.utils.menus import DEFAULT_CONTROLS, menu
+from redbot.core.utils.menus import DEFAULT_CONTROLS, close_menu, menu
 from redbot.core.utils.xmenus import BaseMenu, ListPages
 from tabulate import tabulate
 
@@ -18,7 +21,7 @@ log = logging.getLogger("red.aikaterna.tools")
 
 
 class Tools(commands.Cog):
-    """Mod and Admin tools."""
+    """Mod and Admin utility tools."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -44,22 +47,15 @@ class Tools(commands.Cog):
 
     @commands.guild_only()
     @commands.group()
-    async def access(self):
+    async def access(self, ctx: commands.Context):
         """Check channel access"""
         pass
 
     @access.command()
     async def compare(self, ctx, user: discord.Member):
         """Compare channel access with another server member."""
-        if user is None:
-            return
-        guild = ctx.guild
-
-        try:
-            tcs = guild.text_channels
-            vcs = guild.voice_channels
-        except AttributeError:
-            return await ctx.send("User is not in that guild or I do not have access to that guild.")
+        tcs = ctx.guild.text_channels
+        vcs = ctx.guild.voice_channels
 
         author_text_channels = [c for c in tcs if c.permissions_for(ctx.author).read_messages is True]
         author_voice_channels = [c for c in vcs if c.permissions_for(ctx.author).connect is True]
@@ -108,13 +104,8 @@ class Tools(commands.Cog):
     @access.command()
     async def text(self, ctx, user: discord.Member):
         """Check text channel access."""
-        guild = ctx.guild
-
-        try:
-            can_access = [c.name for c in guild.text_channels if c.permissions_for(user).read_messages is True]
-            text_channels = [c.name for c in guild.text_channels]
-        except AttributeError:
-            return await ctx.send("User is not in that guild or I do not have access to that guild.")
+        can_access = [c.name for c in ctx.guild.text_channels if c.permissions_for(user).read_messages is True]
+        text_channels = [c.name for c in ctx.guild.text_channels]
 
         prefix = "You have" if user.id == ctx.author.id else user.name + " has"
         msg = "```ini\n[{} access to {} out of {} text channels]\n\n".format(
@@ -129,13 +120,8 @@ class Tools(commands.Cog):
     @access.command()
     async def voice(self, ctx, user: discord.Member):
         """Check voice channel access."""
-        guild = ctx.guild
-
-        try:
-            can_access = [c.name for c in guild.voice_channels if c.permissions_for(user).connect is True]
-            voice_channels = [c.name for c in guild.voice_channels]
-        except AttributeError:
-            return await ctx.send("User is not in that guild or I do not have access to that guild.")
+        can_access = [c.name for c in ctx.guild.voice_channels if c.permissions_for(user).connect is True]
+        voice_channels = [c.name for c in ctx.guild.voice_channels]
 
         prefix = "You have" if user.id == ctx.author.id else user.name + " has"
         msg = "```ini\n[{} access to {} out of {} voice channels]\n\n".format(
@@ -147,19 +133,17 @@ class Tools(commands.Cog):
         for page in pagify(msg, delims=["\n"], shorten_by=16):
             await ctx.send(page)
 
-    @commands.guild_only()
     @commands.command()
+    @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
+    @commands.bot_has_permissions(manage_guild=True)
     async def banlist(self, ctx):
         """Displays the server's banlist."""
-        try:
-            banlist = await ctx.guild.bans()
-        except discord.errors.Forbidden:
-            await ctx.send("I do not have the `Ban Members` permission.")
-            return
+        banlist = await ctx.guild.bans()
         bancount = len(banlist)
+        ban_list = []
         if bancount == 0:
-            msg = "No users are banned from this server."
+            return await ctx.send("No users are currently banned from this server.")
         else:
             msg = ""
             for user_obj in banlist:
@@ -177,17 +161,13 @@ class Tools(commands.Cog):
             embed_list.append(embed)
         await menu(ctx, embed_list, DEFAULT_CONTROLS)
 
-    @commands.guild_only()
     @commands.command()
-    async def chinfo(self, ctx, channel: int = None):
+    @commands.guild_only()
+    async def chinfo(self, ctx, channel: Union[int, discord.abc.GuildChannel] = None):
         """Shows channel information. Defaults to current text channel."""
-        if channel is None:
-            channel = ctx.channel
-        else:
-            channel = self.bot.get_channel(channel)
-
-        if channel is None:
-            return await ctx.send("Not a valid channel.")
+        channel = self.bot.get_channel(channel) if isinstance(channel, int) else channel
+        channel = channel or ctx.channel
+        guild = channel.guild
 
         yesno = {True: "Yes", False: "No"}
         typemap = {
@@ -196,53 +176,55 @@ class Tools(commands.Cog):
             discord.CategoryChannel: "Category",
         }
 
-        load = "Loading channel info..."
-        waiting = await ctx.send(box(load))
+        with sps(Exception):
+            caller = inspect.currentframe().f_back.f_code.co_name.strip()
 
         data = ""
-        data += "[Name]         : {}\n".format(escape(str(channel)))
-        data += "[ID]           : {}\n".format(channel.id)
-        data += "[Private]      : {}\n".format(yesno[isinstance(channel, discord.abc.PrivateChannel)])
+        if caller == "invoke" or channel.guild != ctx.guild:
+            data += f"[Server]       : {channel.guild.name}\n"
+        data += f"[Name]         : {escape(str(channel))}\n"
+        data += f"[ID]           : {channel.id}\n"
         if isinstance(channel, discord.TextChannel) and channel.topic != "":
-            data += "[Topic]        : {}\n".format(channel.topic)
-        data += "[Position]     : {}\n".format(channel.position)
-        data += "[Created]      : {}\n".format(self._accurate_timedelta(channel.created_at))
-        data += "[Type]         : {}\n".format(typemap[type(channel)])
+            data += f"[Topic]        : {channel.topic}\n"
+        data += f"[Position]     : {channel.position}\n"
+        data += f"[Created]      : {self._humanize_time(channel.created_at)} ago\n"
+        data += f"[Type]         : {typemap[type(channel)]}\n"
         if isinstance(channel, discord.VoiceChannel):
-            data += "[Users]        : {}\n".format(len(channel.members))
-            data += "[User limit]   : {}\n".format(channel.user_limit)
-            data += "[Bitrate]      : {} Kbps\n".format(int(channel.bitrate / 1000))
-        await asyncio.sleep(1)
-        await waiting.edit(content=box(data, lang="ini"))
+            data += f"[Users]        : {len(channel.members)}\n"
+            data += f"[User limit]   : {channel.user_limit}\n"
+            data += f"[Bitrate]      : {channel.bitrate / 1000} Kbps\n"
+        await ctx.send(box(data, lang="ini"))
 
-    @commands.guild_only()
     @commands.command()
+    @commands.guild_only()
     async def eid(self, ctx, emoji: discord.Emoji):
         """Get an id for an emoji."""
         await ctx.send(f"{emoji}:{emoji.id}")
 
-    @commands.guild_only()
     @commands.command()
+    @commands.guild_only()
     async def einfo(self, ctx, emoji: discord.Emoji):
         """Emoji information."""
         e = emoji
         m = (
-            f"{str(e)}\n```ini\n"
-            + f"[NAME]    :   {e.name}\n"
-            + f"[GUILD]   :   {e.guild}\n"
-            + f"[URL]     :   {e.url}\n"
-            + f"[ANIMATED]:   {e.animated}```"
+            f"{str(e)}\n"
+            f"```ini\n"
+            f"[NAME]    :   {e.name}\n"
+            f"[GUILD]   :   {e.guild}\n"
+            f"[URL]     :   {e.url}\n"
+            f"[ANIMATED]:   {e.animated}"
+            "```"
         )
         await ctx.send(m)
 
+    @commands.command()
     @commands.guild_only()
-    @commands.bot_has_permissions(embed_links=True)
-    @commands.command(aliases=["hasrole"])
+    @commands.bot_has_permissions(add_reactions=True, embed_links=True)
     async def inrole(self, ctx, *, rolename):
         """Check members in the role specified."""
         guild = ctx.guild
         if rolename.startswith("<@&"):
-            role_id = rolename.lstrip("<@&").rstrip(">")
+            role_id = int(re.search(r"<@&(.{18})>$", rolename)[1])
             role = discord.utils.get(ctx.guild.roles, id=role_id)
         elif len(rolename) in [17, 18] and rolename.isdigit():
             role = discord.utils.get(ctx.guild.roles, id=int(rolename))
@@ -263,7 +245,7 @@ class Tools(commands.Cog):
             else:
                 msg = (
                     f"**{len(roles)} roles found with** `{rolename}` **in the name.**\n"
-                    + f"Type the number of the role you wish to see.\n\n"
+                    f"Type the number of the role you wish to see.\n\n"
                 )
                 tbul8 = []
                 for num, role in enumerate(roles):
@@ -357,7 +339,7 @@ class Tools(commands.Cog):
         ).start(ctx=ctx)
 
     @commands.command()
-    @commands.bot_has_permissions(embed_links=True)
+    @commands.bot_has_permissions(add_reactions=True, embed_links=True)
     async def channelmembers(self, ctx, channel: Union[int, discord.TextChannel]):
         """Returns list of members who has access to said text channel."""
         target = self.bot.get_channel(channel) if isinstance(channel, int) else channel
@@ -420,26 +402,19 @@ class Tools(commands.Cog):
             value = suffixes.get(num % 10, "th")
         return value
 
-    @commands.guild_only()
     @commands.command()
-    async def joined(self, ctx, user: FuzzyMember = None):
+    @commands.guild_only()
+    async def joined(self, ctx, *, user: FuzzyMember = None):
         """Show when you or a user joined this server."""
-        user = user or ctx.author
+        user = user or [ctx.author]
+        user = user[0]
         if user.joined_at:
-            user_joined = user.joined_at.strftime("%d %b, %Y at %H:%M")
-            joined_on = f"{self._accurate_timedelta(user.joined_at)} ago (on {user_joined} UTC)"
+            user_joined = self.format_relative(user.joined_at, "D")
+            joined_on = f"{self._humanize_time(user.joined_at)} ago ({user_joined})"
         else:
             joined_on = "a mysterious date not even Discord knows"
 
         user_index = sorted(ctx.guild.members, key=lambda m: m.joined_at).index(user) + 1
-        # if ctx.channel.permissions_for(ctx.guild.me).embed_links:
-        #     embed = discord.Embed(
-        #         description=f"{user.mention} joined this server on:\n{joined_on}.\n\n"
-        #         + f"Member position in this server: ",
-        #         color=0x2F3136,
-        #     )
-        #     await ctx.send(embed=embed)
-        # else:
         await ctx.send(
             f"**{user}** joined here {joined_on}.\n"
             + f"Member position in this server: **{user_index}{self._get_suffix(user_index)}**"
@@ -459,7 +434,9 @@ class Tools(commands.Cog):
             form.format(
                 gid=g.id,
                 mems=g.member_count,
-                name=filter_invites(escape(g.name)) if len(g.name) < 45 else filter_invites(escape(f"{g.name[:40]} ...")),
+                name=filter_invites(escape(g.name))
+                if len(g.name) < 45
+                else filter_invites(escape(f"{g.name[:40]} ...")),
                 zpadding=max_zpadding
             )
             for g in guilds
@@ -467,20 +444,19 @@ class Tools(commands.Cog):
         final = "\n".join(all_forms)
 
         await ctx.send(header)
-        page_list = []
+        pages = []
         for page in pagify(final, delims=["\n"], page_length=1950):
-            page_list.append(asciidoc(page))
+            pages.append(box(page, lang="asciidoc"))
 
-        if len(page_list) == 1:
-            return await ctx.send(page_list)
-        await menu(ctx, page_list, DEFAULT_CONTROLS)
+        controls = {"\N{CROSS MARK}": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
+        await menu(ctx, pages, controls)
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_channels=True)
     @commands.command(name="listchannel", aliases=["chlist"])
     async def listchannel(self, ctx):
         """
-        List the channels of the current server
+        List the channels of the current server.
         """
         asciidoc = lambda m: "{}".format(box(m, lang="asciidoc"))
         channels = ctx.guild.channels
@@ -501,16 +477,18 @@ class Tools(commands.Cog):
     @commands.command()
     @commands.mod_or_permissions(manage_guild=True)
     async def newusers(self, ctx, count: int = 5, fm: str = "py"):
-        """Lists the newest 5 members."""
-        guild = ctx.guild
+        """Lists the newest 5 (max 25) members."""
         count = max(min(count, 25), 5)
-        members = sorted(guild.members, key=lambda m: m.joined_at, reverse=True)[:count]
+        members = sorted(ctx.guild.members, key=lambda m: m.joined_at, reverse=True)[:count]
 
         e = discord.Embed(title='New Members', colour=discord.Colour.green())
 
         # Credits to Danny
         for member in members:
-            body = f'Joined {self.format_relative(member.joined_at, "R")}\nCreated {self.format_relative(member.created_at, "R")}'
+            body = (
+                f"Joined {self.format_relative(member.joined_at, 'R')}\n"
+                + f"Created {self.format_relative(member.created_at, 'R')}"
+            )
             e.add_field(name=f'{member} (ID: {member.id})', value=body, inline=False)
 
         await ctx.send(embed=e)
@@ -521,14 +499,13 @@ class Tools(commands.Cog):
             return f'<t:{int(dt.timestamp())}>'
         return f'<t:{int(dt.timestamp())}:{style}>'
 
-    @commands.guild_only()
     @commands.command()
+    @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
-    async def perms(self, ctx, user: FuzzyMember = None):
+    async def perms(self, ctx, *, user: FuzzyMember = None):
         """Fetch a specific user's permissions."""
-        if user is None:
-            user = ctx.author
-
+        user = user or [ctx.author]
+        user = user[0]
         perms = iter(ctx.channel.permissions_for(user))
         perms_we_have = ""
         perms_we_dont = ""
@@ -539,8 +516,8 @@ class Tools(commands.Cog):
                 perms_we_dont += "-\t{0}\n".format(str(x).split("'")[1])
         await ctx.send(box("{0}{1}".format(perms_we_have, perms_we_dont), lang="diff"))
 
-    @commands.guild_only()
     @commands.command()
+    @commands.guild_only()
     async def rid(self, ctx, *, rolename: discord.Role):
         """Shows the id of a role."""
         if rolename is discord.Role:
@@ -556,59 +533,49 @@ class Tools(commands.Cog):
             return
         await ctx.send(f"**({rolename})** Role ID: {role.id}")
 
+    @commands.command()
     @commands.guild_only()
-    @commands.command(aliases=["role"])
     @commands.bot_has_permissions(embed_links=True)
-    async def rinfo(self, ctx, *, rolename: discord.Role):
+    async def rinfo(self, ctx, *, rolename):
         """Shows role info."""
-        guild = ctx.guild
-
         if not isinstance(rolename, discord.Role):
-            role = self._role_from_string(guild, rolename, guild.roles)
+            role = self._role_from_string(ctx.guild, rolename, ctx.guild.roles)
         else:
             role = rolename
-        if role is not None:
-            perms = iter(role.permissions)
-            rolepos = len(guild.roles) - role.position
-            has = len([m for m in guild.members if role in m.roles])
-            plur = "user" if has == 1 else "users"
-            perms_we_have = "\n".join("{}".format(str(x).split("'")[1]) for x in sorted(perms) if "True" in str(x))
-            perms_we_dont = "\n".join("{}".format(str(x).split("'")[1]) for x in sorted(perms) if "False" in str(x))
-            if perms_we_have == "":
-                perms_we_have = "None"
-            if perms_we_dont == "":
-                perms_we_dont = "None"
-            extra = f"\n{self.tick} Hoisted" if role.hoist is True else ""
-            extra += f"\n{self.tick} Managed" if role.managed is True else ""
-            extra += f"\n{self.tick} Mentionable" if role.mentionable is True else ""
-            msg = discord.Embed(description="Gathering role stats...", colour=role.color)
-            if role.color is None:
-                role.color = discord.Colour(value=0x000000)
-            loadingmsg = await ctx.send(embed=msg)
-            em = discord.Embed(
-                description=f"Role info for {role.mention}\n{extra}",
-                colour=role.colour
-            )
-            # em.add_field(name="Role Name", value=role.name)
-            em.add_field(name="Created", value=self._accurate_timedelta(role.created_at))
-            # em.add_field(name="Users in Role", value=has)
-            # em.add_field(name="ID", value=role.id)
-            em.add_field(name="Color", value=role.color)
-            em.add_field(name="Position", value=rolepos)
+        if role is None:
+            return await ctx.send("That role cannot be found.")
+
+        perms = iter(role.permissions)
+        rolepos = len(ctx.guild.roles) - role.position
+        has = len([m for m in ctx.guild.members if role in m.roles])
+        plur = "user" if has == 1 else "users"
+        perms_we_have = "\n".join("{}".format(str(x).split("'")[1]) for x in sorted(perms) if "True" in str(x))
+        #  perms_we_dont = "\n".join("{}".format(str(x).split("'")[1]) for x in sorted(perms) if "False" in str(x))
+        extra = f"\n{self.tick} Hoisted" if role.hoist is True else ""
+        extra += f"\n{self.tick} Managed" if role.managed is True else ""
+        extra += f"\n{self.tick} Mentionable" if role.mentionable is True else ""
+        rcolor = role.color or discord.Colour(value=0x000000)
+        em = discord.Embed(colour=rcolor)
+        em.description = f"Role info for {role.mention}\n{extra}"
+        em.set_author(name=str(role.guild.name), icon_url=role.guild.icon_url)
+        # em.add_field(name="Role Name", value=role.name)
+        em.add_field(name="Created", value=f"{self._humanize_time(role.created_at)} ago")
+        # em.add_field(name="Users in Role", value=has)
+        # em.add_field(name="ID", value=role.id)
+        em.add_field(name="Color", value=role.color)
+        em.add_field(name="Position", value=rolepos)
+        if perms_we_have:
             em.add_field(
                 name="Allowed Permissions",
                 value=f"{perms_we_have.replace('_', ' ').title()}"
             )
-            # em.add_field(name="Invalid Permissions", value="{}".format(perms_we_dont))
-            em.set_footer(text=f"ID: {role.id} | {has} {plur} have this role")
-            em.set_thumbnail(url=role.guild.icon_url)
-            await loadingmsg.edit(embed=em)
-        else:
-            await ctx.send("That role cannot be found.")
-            return
+        # em.add_field(name="Invalid Permissions", value="{}".format(perms_we_dont))
+        em.set_footer(text=f"Role ID: {role.id} | {has} {plur} have this role!")
+        #  em.set_thumbnail(url=role.guild.icon_url)
+        await ctx.send(embed=em)
 
+    @commands.command()
     @commands.guild_only()
-    @commands.command(aliases=["listroles"])
     @commands.mod_or_permissions(manage_guild=True)
     async def rolelist(self, ctx):
         """Displays the server's roles."""
@@ -629,28 +596,35 @@ class Tools(commands.Cog):
             embed_list.append(embed)
         await menu(ctx, embed_list, DEFAULT_CONTROLS)
 
-    @commands.command(hidden=True)
+    @commands.command()
+    @commands.guild_only()
     async def sharedservers(self, ctx, *, user: FuzzyMember = None):
-        """Shows shared servers one has with [botname]. Defaults to you, the author."""
-        user = user or ctx.author
+        """Shows shared servers a member has with [botname]."""
+        user = user or [ctx.author]
+        user = user[0]
         if user.id == ctx.me.id:
-            return await ctx.send("Nice try. I can't fetch shared servers with myself.")
+            return await ctx.send("Nice try, stalker.")
+
         seen = len(set([m.guild.name for m in self.bot.get_all_members() if m.id == user.id]))
         shared = [m.guild.name for m in self.bot.get_all_members() if m.id == user.id]
         _share = [shared[0],] + [f'{r:>{len(r)+15}}' for r in shared[1:]]
         final = "\n".join(_share)
 
-        data = f"[Guilds]    :  {seen} shared\n[In Guilds] :  {final}"
+        data = (
+            f"[Guilds]    :  {seen} shared\n"
+            f"[In Guilds] :  {final}"
+        )
 
         for page in pagify(data, page_length=2000):
             await ctx.send(box(page, lang="ini"))
 
+    @commands.command()
     @commands.guild_only()
-    @commands.command(aliases=["ginfo"])
-    async def sinfo(self, ctx, guild: GuildConverter = None):
+    async def sinfo(self, ctx, *, guild: GuildConverter = None):
         """Shows server information."""
         guild = guild or ctx.guild
-
+        await ctx.trigger_typing()
+        online = str(len([m.status for m in guild.members if str(m.status) == "online" or str(m.status) == "idle"]))
         total = str(len(guild.members))
         humans = str(len([m for m in guild.members if not m.bot]))
         robots = str(len([m for m in guild.members if m.bot]))
@@ -666,72 +640,89 @@ class Tools(commands.Cog):
         static = len([e for e in guild.emojis if not e.animated])
         animated = len([e for e in guild.emojis if e.animated])
 
-        load = "Loading guild info..."
-        waiting = await ctx.send(box(load))
-
-        data = ""
-        data += "[Guild ID]     :  {}\n".format(guild.id)
-        data += "[Created]      :  {}\n".format(self._accurate_timedelta(guild.created_at))
-        data += "[Region]       :  {}\n".format(guild.region)
-        data += "[Owner]        :  {}\n".format(guild.owner)
-        data += "[Users]        :  {} ( {} humans + {} bots )\n\n".format(total, humans, robots)
-        data += "[Categories]   :  {}\n".format(categories)
-        data += "[Channels]     :  {} text + {} voice\n\n".format(text_channels, voice_channels)
-        # data += "[Voice]        :  {} channels\n".format(len(voice_channels))
-        data += "[Roles]        :  {}\n".format(len(guild.roles))
-        data += "[Emojis]       :  {} ({} static + {} animated)\n".format(len(guild.emojis), static, animated)
-        data += "[2FA Admin]    :  {}\n".format(mfa)
+        data = f"[Name]         :  {guild.name}\n"
+        data += f"[Guild ID]     :  {guild.id}\n"
+        data += f"[Created]      :  {self._humanize_time(guild.created_at)} ago\n"
+        data += f"[Region]       :  {guild.region}\n"
+        data += f"[Owner]        :  {guild.owner}\n"
+        data += f"[Users]        :  {total} ( {humans} humans + {robots} bots )\n\n"
+        data += f"[Categories]   :  {categories}\n"
+        data += f"[Channels]     :  {text_channels} text + {voice_channels} voice\n\n"
+        # data += f"[Voice]        :  {len(voice_channels)} channels\n"
+        data += f"[Roles]        :  {len(guild.roles)}\n"
+        data += f"[Emojis]       :  {len(guild.emojis)} ({static} static + {animated} animated)\n"
+        data += f"[2FA Admin]    :  {mfa}\n"
         if guild.premium_tier >= 1:
-            data += "[Boost Tier]   :  Tier {}\n".format(btier)
-            data += "[Boosts count] :  {} boosts from {} {}\n".format(boosts, psubs, ppsub)
-        data += "[Upload Limit] :  {} MiB\n".format(upcap)
-        await asyncio.sleep(1)
-        await waiting.delete()
+            data += f"[Boost Tier]   :  Tier {btier}\n"
+            data += f"[Boosts count] :  {boosts} boosts from {psubs} {ppsub}\n"
+        data += f"[Upload Limit] :  {upcap} MiB\n"
         for page in pagify(data):
             await ctx.send(box(page, lang="ini"))
 
-    @commands.guild_only()
     @commands.command()
-    async def uinfo(self, ctx, user: FuzzyMember = None):
-        """Shows user information. Defaults to author."""
-        if user is None:
-            user = ctx.author
+    async def uid(self, ctx, *, partial_name_or_nick: FuzzyMember = None):
+        """Get a member's id from a fuzzy name search."""
+        partial_name_or_nick = partial_name_or_nick or [ctx.author]
 
-        seen = str(len(set([member.guild.name for member in self.bot.get_all_members() if member.id == user.id])))
-        spot = next((activity for activity in user.activities if isinstance(activity, discord.Spotify)), None)
-        p_acts = [c for c in user.activities if c.type == discord.ActivityType.playing]
-        s_acts = [c for c in user.activities if c.type == discord.ActivityType.streaming]
-        w_acts = [c for c in user.activities if c.type == discord.ActivityType.watching]
-        c_acts = [c for c in user.activities if c.type == discord.ActivityType.custom]
+        table = []
+        headers = ["User ID", "Name", "Nickname"]
+        for user_obj in partial_name_or_nick:
+            table.append([user_obj.id, user_obj.name, user_obj.nick if not None else ""])
+        msg = tabulate(table, headers, tablefmt="simple")
 
-        load = "Loading user info..."
-        waiting = await ctx.send(box(load))
+        pages = []
+        for page in pagify(msg, delims=["\n"], page_length=1800):
+            pages.append(box(page))
 
-        data = ""
-        data += f"[Name]            : {escape(str(user))}\n"
-        if user.nick:
-            data += f"[Nickname]        : {escape(str(user.nick))}\n"
-        data += f"[User ID]         : {user.id}\n"
-        data += f"[Status]          : {user.status}\n"
-        data += f"[Servers]         : {seen} shared\n"
-        if p_acts:
-            data += f"[Playing]         : {escape(str(p_acts[0].name))}\n"
-        if spot:
-            _form = f"{spot.title} by {spot.artist}"
-            data += f"[Listening]       : {escape(_form)}\n"
-        if w_acts:
-            data += f"[Watching]        : {escape(str(w_acts[0].name))}\n"
-        if s_acts:
-            data += f"[Streaming]       : {escape(str(s_acts[0].name))}\n"
-        if c_acts:
-            data += f"[Custom status]   : {escape(str(c_acts[0].name))}\n"
-        data += f"[Created]         : {self._accurate_timedelta(user.created_at)}\n"
-        await asyncio.sleep(1)
-        await waiting.delete()
-        for page in pagify(data):
-            await ctx.send(box(page, lang="ini"))
+        controls = {"\N{CROSS MARK}": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
+        await menu(ctx, pages, controls)
 
+    @commands.command()
     @commands.guild_only()
+    async def uinfo(self, ctx, *, users: FuzzyMember = None):
+        """Shows user information. Defaults to author."""
+        users = users or [ctx.author]
+
+        await ctx.trigger_typing()
+        pages = []
+        for user in users:
+            roles = [r.name for r in user.roles if r.name != "@everyone"]
+
+            c_acts = [c for c in user.activities if c.type == discord.ActivityType.custom]
+            l_acts = [l for l in user.activities if l.type == discord.ActivityType.listening]
+            p_acts = [p for p in user.activities if p.type == discord.ActivityType.playing]
+            s_acts = [s for s in user.activities if s.type == discord.ActivityType.streaming]
+            w_acts = [w for w in user.activities if w.type == discord.ActivityType.watching]
+
+            data = f"[Name]            : {escape(str(user))}\n"
+            if user.nick:
+                data += f"[Nickname]        : {escape(str(user.nick))}\n"
+            data += f"[User ID]         : {user.id}\n"
+            data += f"[Status]          : {user.status}\n"
+            data += f"[Servers]         : {len(user.mutual_guilds)} shared\n"
+            if p_acts:
+                data += f"[Playing]         : {escape(str(p_acts[0].name))}\n"
+            if l_acts and isinstance(l_acts[0], discord.Spotify):
+                spot = l_acts[0]
+                _form = f"{spot.title} by {spot.artist}"
+                data += f"[Listening]       : {escape(_form)}\n"
+            if w_acts:
+                data += f"[Watching]        : {escape(str(w_acts[0].name))}\n"
+            if s_acts:
+                data += f"[Streaming]       : {escape(str(s_acts[0].name))}\n"
+            if c_acts:
+                data += f"[Custom status]   : {escape(str(c_acts[0].name))}\n"
+            data += f"[Created]         : {self._humanize_time(user.created_at)} ago\n"
+            if user.joined_at:
+                data += f"[Joined]          : {self._humanize_time(user.joined_at)} ago\n"
+                data += f"[Roles]           : {len(roles)}\n"
+                data += f"[In Voice (VC)]   : {user.voice.channel if user.voice is not None else None}\n"
+                data += f"[AFK]             : {user.voice.afk if user.voice is not None else False}\n"
+        pages.append(box(data, lang="ini"))
+
+        controls = {"\N{CROSS MARK}": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
+        await menu(ctx, pages, controls)
+
     @commands.command()
     @commands.is_owner()
     async def whatis(self, ctx, id: int):
@@ -774,7 +765,7 @@ class Tools(commands.Cog):
             await ctx.send("I could not find anything for this ID.")
 
     @staticmethod
-    def _accurate_timedelta(time):
+    def _humanize_time(time):
         dt1 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         dt2 = time
 
