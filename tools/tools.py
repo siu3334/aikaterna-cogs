@@ -15,7 +15,7 @@ from redbot.core.utils.menus import DEFAULT_CONTROLS, close_menu, menu
 from redbot.core.utils.xmenus import BaseMenu, ListPages
 from tabulate import tabulate
 
-from .converter import FuzzyMember, FuzzyRole, GuildConverter
+from serverstats.converters import FuzzyMember, FuzzyRole, GuildConverter
 
 log = logging.getLogger("red.aikaterna.tools")
 
@@ -25,25 +25,7 @@ class Tools(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self.tick = "<:boldCheck:799274720159334430>"
-        self.emojis = self.bot.loop.create_task(self.init())
-
-    def cog_unload(self):
-        if self.emojis:
-            self.emojis.cancel()
-
-    async def init(self):
-        await self.bot.wait_until_ready()
-        self.status_emojis = {
-            "mobile": discord.utils.get(self.bot.emojis, id=749067110931759185),
-            "mobile_dnd": discord.utils.get(self.bot.emojis, id=847028205818740747),
-            "mobile_idle": discord.utils.get(self.bot.emojis, id=847028206060961802),
-            "online": discord.utils.get(self.bot.emojis, id=749221433552404581),
-            "idle": discord.utils.get(self.bot.emojis, id=749221433095356417),
-            "dnd": discord.utils.get(self.bot.emojis, id=749221432772395140),
-            "invisible": discord.utils.get(self.bot.emojis, id=749221433049088082),
-            "streaming": discord.utils.get(self.bot.emojis, id=749221434039205909),
-        }
+        self.tick = "<:xcheck:847024581579505665>"
 
     @commands.guild_only()
     @commands.group()
@@ -151,15 +133,15 @@ class Tools(commands.Cog):
                 msg += f"`{user_obj.user.id}` - {user_name}\n"
 
         banlist = sorted(msg)
-        embed_list = []
+        pages = []
         for page in pagify(msg, delims=["\n"], page_length=2000):
             embed = discord.Embed(
                 description=page,
                 colour=await ctx.embed_colour(),
             )
             embed.set_footer(text=f"Total bans: {bancount}")
-            embed_list.append(embed)
-        await menu(ctx, embed_list, DEFAULT_CONTROLS)
+            pages.append(embed)
+        await menu(ctx, pages, DEFAULT_CONTROLS)
 
     @commands.command()
     @commands.guild_only()
@@ -281,26 +263,27 @@ class Tools(commands.Cog):
         awaiter = await ctx.send(embed=embed)
         await asyncio.sleep(1)  # taking time to retrieve the names
         users_in_role = "\n".join(sorted(str(m) for m in guild.members if role in m.roles))
-
-        form = "{status}  {name_tag}"
+        cog = self.bot.get_cog("Userinfo")
+        form = "{status}  {name_tag}{is_bot}"
         all_forms = [
             form.format(
-                status=f"{self.status_emojis['mobile_idle']}"
+                status=f"{cog.status_emojis['idle_mobile']}"
                 if (g.is_on_mobile() and g.status.name == "idle")
-                else f"{self.status_emojis['mobile_dnd']}"
+                else f"{cog.status_emojis['dnd_mobile']}"
                 if (g.is_on_mobile() and g.status.name == "dnd")
-                else f"{self.status_emojis['mobile']}"
+                else f"{cog.status_emojis['mobile']}"
                 if (g.is_on_mobile() and g.status.name == "online")
-                else f"{self.status_emojis['streaming']}"
+                else f"{cog.status_emojis['streaming']}"
                 if any(a.type is discord.ActivityType.streaming for a in g.activities)
-                else f"{self.status_emojis['online']}"
+                else f"{cog.status_emojis['online']}"
                 if g.status.name == "online"
-                else f"{self.status_emojis['idle']}"
+                else f"{cog.status_emojis['idle']}"
                 if g.status.name == "idle"
-                else f"{self.status_emojis['dnd']}"
+                else f"{cog.status_emojis['dnd']}"
                 if g.status.name == "dnd"
-                else f"{self.status_emojis['invisible']}",
+                else f"{cog.status_emojis['offline']}",
                 name_tag=str(g),
+                is_bot=" <:bot:848557763172892722>" if g.bot else "",
             )
             for g in sorted(guild.members, key=lambda x: x.joined_at) if role in g.roles
         ]
@@ -317,7 +300,7 @@ class Tools(commands.Cog):
             await awaiter.delete()
         except discord.NotFound:
             pass
-        embed_list = []
+        pages = []
         sumif = len([m for m in guild.members if role in m.roles])
         for page in pagify(final, delims=["\n"], page_length=1000):
             embed = discord.Embed(
@@ -325,10 +308,10 @@ class Tools(commands.Cog):
                 colour=role.color,
             )
             # embed.add_field(name="Users", value=page)
-            embed_list.append(embed)
+            pages.append(embed)
         final_embed_list = []
-        for i, embed in enumerate(embed_list):
-            embed.set_footer(text=f"Page {i + 1} of {len(embed_list)} | Role ID: {role.id}")
+        for i, embed in enumerate(pages):
+            embed.set_footer(text=f"Page {i + 1} of {len(pages)} | Role ID: {role.id}")
             final_embed_list.append(embed)
         await BaseMenu(
             source=ListPages(pages=final_embed_list),
@@ -347,25 +330,25 @@ class Tools(commands.Cog):
             return await ctx.send("Said channel not found.")
 
         members = target.members
-
+        cog = self.bot.get_cog("Userinfo")
         form = "{status}  {name_tag}{bot}"
         all_forms = [
             form.format(
-                status=f"{self.status_emojis['mobile_idle']}"
+                status=f"{cog.status_emojis['idle_mobile']}"
                 if (g.is_on_mobile() and g.status.name == "idle")
-                else f"{self.status_emojis['mobile_dnd']}"
+                else f"{cog.status_emojis['dnd_mobile']}"
                 if (g.is_on_mobile() and g.status.name == "dnd")
-                else f"{self.status_emojis['mobile']}"
+                else f"{cog.status_emojis['mobile']}"
                 if (g.is_on_mobile() and g.status.name == "online")
-                else f"{self.status_emojis['streaming']}"
+                else f"{cog.status_emojis['streaming']}"
                 if any(a.type is discord.ActivityType.streaming for a in g.activities)
-                else f"{self.status_emojis['online']}"
+                else f"{cog.status_emojis['online']}"
                 if g.status.name == "online"
-                else f"{self.status_emojis['idle']}"
+                else f"{cog.status_emojis['idle']}"
                 if g.status.name == "idle"
-                else f"{self.status_emojis['dnd']}"
+                else f"{cog.status_emojis['dnd']}"
                 if g.status.name == "dnd"
-                else f"{self.status_emojis['invisible']}",
+                else f"{cog.status_emojis['offline']}",
                 name_tag=str(g),
                 bot=" <:bot:848557763172892722>" if g.bot else "",
             )
@@ -373,7 +356,7 @@ class Tools(commands.Cog):
         ]
         final = "\n".join(all_forms)
 
-        embed_list = []
+        pages = []
         for page in pagify(final, delims=["\n"], page_length=1000):
             embed = discord.Embed(
                 description=f"Below **{len(members)}** user(s) have access to **#{target.name}**\n\n{page}",
@@ -381,10 +364,10 @@ class Tools(commands.Cog):
             )
             embed.set_author(name=str(target.guild.name), icon_url=target.guild.icon_url)
             embed.timestamp = discord.utils.snowflake_time(target.last_message_id)
-            embed_list.append(embed)
+            pages.append(embed)
         final_embed_list = []
-        for i, embed in enumerate(embed_list):
-            embed.set_footer(text=f"Page {i + 1} of {len(embed_list)} | Est. last message was on")
+        for i, embed in enumerate(pages):
+            embed.set_footer(text=f"Page {i + 1} of {len(pages)} | Est. last message was on")
             final_embed_list.append(embed)
         await BaseMenu(
             source=ListPages(pages=final_embed_list),
@@ -476,7 +459,7 @@ class Tools(commands.Cog):
     @commands.guild_only()
     @commands.command()
     @commands.mod_or_permissions(manage_guild=True)
-    async def newusers(self, ctx: commands.Context, count: int = 5, fm: str = "py"):
+    async def newusers(self, ctx: commands.Context, count: int = 5):
         """Lists the newest 5 (max 25) members."""
         count = max(min(count, 25), 5)
         members = sorted(ctx.guild.members, key=lambda m: m.joined_at, reverse=True)[:count]
@@ -607,13 +590,13 @@ class Tools(commands.Cog):
 
         rolelist = sorted(rolelist, reverse=True)
         rolelist = "\n".join(rolelist)
-        embed_list = []
+        pages = []
         for page in pagify(rolelist, shorten_by=1400):
             embed = discord.Embed(
                 description=f"**Total roles:** {len(ctx.guild.roles)}\n\n{page}", colour=await ctx.embed_colour(),
             )
-            embed_list.append(embed)
-        await menu(ctx, embed_list, DEFAULT_CONTROLS)
+            pages.append(embed)
+        await menu(ctx, pages, DEFAULT_CONTROLS)
 
     @commands.command()
     @commands.guild_only()
@@ -684,9 +667,10 @@ class Tools(commands.Cog):
         partial_name_or_nick = partial_name_or_nick or [ctx.author]
 
         table = []
-        headers = ["User ID", "Name", "Nickname"]
+        headers = ["User ID", "Username", "Nickname"]
         for user_obj in partial_name_or_nick:
-            table.append([user_obj.id, user_obj.name, user_obj.nick if not None else ""])
+            nickname = user_obj.nick or ""
+            table.append([user_obj.id, str(user_obj), nickname])
         msg = tabulate(table, headers, tablefmt="simple")
 
         pages = []
