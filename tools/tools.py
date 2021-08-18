@@ -1,10 +1,8 @@
 import asyncio
-import datetime
 import inspect
-import logging
-import re
 from contextlib import suppress as sps
-from typing import Union
+from datetime import datetime, timezone
+from typing import List, Union
 
 import discord
 from dateutil import relativedelta
@@ -17,15 +15,13 @@ from tabulate import tabulate
 
 from serverstats.converters import FuzzyMember, FuzzyRole, GuildConverter
 
-log = logging.getLogger("red.aikaterna.tools")
-
 
 class Tools(commands.Cog):
     """Mod and Admin utility tools."""
 
     def __init__(self, bot):
         self.bot = bot
-        self.tick = "<:xcheck:847024581579505665>"
+        self.tick = "<:xyes:847024581579505665>"
 
     @commands.guild_only()
     @commands.group()
@@ -122,33 +118,28 @@ class Tools(commands.Cog):
     async def banlist(self, ctx: commands.Context):
         """Displays the server's banlist."""
         banlist = await ctx.guild.bans()
-        bancount = len(banlist)
-        ban_list = []
-        if bancount == 0:
+        if len(banlist) == 0:
             return await ctx.send("No users are currently banned from this server.")
-        else:
-            msg = ""
-            for user_obj in banlist:
-                user_name = f"{user_obj.user.name}#{user_obj.user.discriminator}"
-                msg += f"`{user_obj.user.id}` - {user_name}\n"
 
-        banlist = sorted(msg)
+        msg = ""
+        for user_obj in banlist:
+            msg += f"`{user_obj.user.id}` • {str(user_obj.user)}\n"
+
         pages = []
         for page in pagify(msg, delims=["\n"], page_length=2000):
-            embed = discord.Embed(
-                description=page,
-                colour=await ctx.embed_colour(),
-            )
-            embed.set_footer(text=f"Total bans: {bancount}")
+            embed = discord.Embed(colour=await ctx.embed_colour())
+            embed.description = page
+            embed.set_footer(text=f"Total bans: {len(banlist)}")
             pages.append(embed)
+
         await menu(ctx, pages, DEFAULT_CONTROLS)
 
     @commands.command()
     @commands.guild_only()
-    async def chinfo(self, ctx: commands.Context, channel: Union[int, discord.abc.GuildChannel] = None):
+    async def cinfo(self, ctx: commands.Context, channel: Union[int, discord.abc.GuildChannel] = None):
         """Shows channel information. Defaults to current text channel."""
-        channel = self.bot.get_channel(channel) if isinstance(channel, int) else channel
         channel = channel or ctx.channel
+        channel = self.bot.get_channel(channel) if isinstance(channel, int) else channel
         guild = channel.guild
 
         yesno = {True: "Yes", False: "No"}
@@ -189,79 +180,25 @@ class Tools(commands.Cog):
         """Emoji information."""
         e = emoji
         m = (
-            f"{str(e)}\n"
-            f"```ini\n"
-            f"[NAME]    :   {e.name}\n"
-            f"[GUILD]   :   {e.guild}\n"
-            f"[URL]     :   {e.url}\n"
-            f"[ANIMATED]:   {e.animated}"
-            "```"
+            f"{str(e)}\n" + f"```ini\n" + f"[NAME]    :   {e.name}\n"
+            f"[GUILD]   :   {e.guild}\n" + f"[URL]     :   {e.url}\n"
+            f"[ANIMATED]:   {e.animated}```"
         )
         await ctx.send(m)
 
     @commands.command()
     @commands.guild_only()
     @commands.bot_has_permissions(add_reactions=True, embed_links=True)
-    async def inrole(self, ctx: commands.Context, *, rolename):
-        """Check members in the role specified."""
+    async def inrole(self, ctx: commands.Context, *, role: FuzzyRole):
+        """Fetch all members who have said role."""
+        await ctx.trigger_typing()
         guild = ctx.guild
-        if rolename.startswith("<@&"):
-            role_id = int(re.search(r"<@&(.{18})>$", rolename)[1])
-            role = discord.utils.get(ctx.guild.roles, id=role_id)
-        elif len(rolename) in [17, 18] and rolename.isdigit():
-            role = discord.utils.get(ctx.guild.roles, id=int(rolename))
-        else:
-            role = discord.utils.find(lambda r: r.name.lower() == rolename.lower(), guild.roles)
 
-        if role is None:
-            roles = []
-            for r in guild.roles:
-                if rolename.lower() in r.name.lower():
-                    roles.append(r)
-
-            if len(roles) == 1:
-                role = roles[0]
-            elif len(roles) < 1:
-                await ctx.send("No roles were found.")
-                return
-            else:
-                msg = (
-                    f"**{len(roles)} roles found with** `{rolename}` **in the name.**\n"
-                    f"Type the number of the role you wish to see.\n\n"
-                )
-                tbul8 = []
-                for num, role in enumerate(roles):
-                    tbul8.append([num + 1, role.name])
-                m1 = await ctx.send(msg + tabulate(tbul8, tablefmt="plain"))
-
-                def check(m):
-                    if (m.author == ctx.author) and (m.channel == ctx.channel):
-                        return True
-
-                try:
-                    response = await self.bot.wait_for("message", check=check, timeout=25)
-                except asyncio.TimeoutError:
-                    await m1.delete()
-                    return
-                if not response.content.isdigit():
-                    await m1.delete()
-                    return
-                else:
-                    response = int(response.content)
-
-                if response not in range(0, len(roles) + 1):
-                    return await ctx.send("Cancelled.")
-                elif response == 0:
-                    return await ctx.send("Cancelled.")
-                else:
-                    role = roles[response - 1]
-
-        embed = discord.Embed(
-            description="Getting member names...",
-            colour=await ctx.embed_colour(),
-        )
+        embed = discord.Embed(colour=await ctx.embed_colour())
+        embed.description = "Getting member names..."
         awaiter = await ctx.send(embed=embed)
         await asyncio.sleep(1)  # taking time to retrieve the names
+
         users_in_role = "\n".join(sorted(str(m) for m in guild.members if role in m.roles))
         cog = self.bot.get_cog("Userinfo")
         form = "{status}  {name_tag}{is_bot}"
@@ -290,31 +227,29 @@ class Tools(commands.Cog):
         final = "\n".join(all_forms)
 
         if len(users_in_role) == 0:
-            embed = discord.Embed(
-                description=bold(f"No one has {role.mention} role."),
-                colour=role.color,
-            )
-            await awaiter.edit(embed=embed)
-            return
-        try:
+            embed = discord.Embed(colour=role.color)
+            embed.description = bold(f"No one has {role.mention} role.")
+
+            return await awaiter.edit(embed=embed)
+
+        with sps(discord.HTTPException, discord.NotFound):
             await awaiter.delete()
-        except discord.NotFound:
-            pass
-        pages = []
+
+        temp_pages = []
         sumif = len([m for m in guild.members if role in m.roles])
         for page in pagify(final, delims=["\n"], page_length=1000):
-            embed = discord.Embed(
-                description=f"**{sumif}** users found in {role.mention} role.\n\n{page}",
-                colour=role.color,
-            )
-            # embed.add_field(name="Users", value=page)
+            embed = discord.Embed(colour=role.color)
+            embed.description = f"**{sumif}** users have {role.mention} role.\n\n{page}"
+
+            temp_pages.append(embed)
+
+        pages: List[Union[discord.Embed, str]] = []
+        for i, embed in enumerate(temp_pages, start=1):
+            embed.set_footer(text=f"Page {i} of {len(temp_pages)} | Role ID: {role.id}")
             pages.append(embed)
-        final_embed_list = []
-        for i, embed in enumerate(pages):
-            embed.set_footer(text=f"Page {i + 1} of {len(pages)} | Role ID: {role.id}")
-            final_embed_list.append(embed)
+
         await BaseMenu(
-            source=ListPages(pages=final_embed_list),
+            source=ListPages(pages=pages),
             delete_message_after=False,
             clear_reactions_after=True,
             timeout=60,
@@ -356,7 +291,7 @@ class Tools(commands.Cog):
         ]
         final = "\n".join(all_forms)
 
-        pages = []
+        temp_pages = []
         for page in pagify(final, delims=["\n"], page_length=1000):
             embed = discord.Embed(
                 description=f"Below **{len(members)}** user(s) have access to **#{target.name}**\n\n{page}",
@@ -364,13 +299,15 @@ class Tools(commands.Cog):
             )
             embed.set_author(name=str(target.guild.name), icon_url=target.guild.icon_url)
             embed.timestamp = discord.utils.snowflake_time(target.last_message_id)
-            pages.append(embed)
-        final_embed_list = []
-        for i, embed in enumerate(pages):
+            temp_pages.append(embed)
+
+        pages: List[Union[discord.Embed, str]] = []
+        for i, embed in enumerate(temp_pages, start=1):
             embed.set_footer(text=f"Page {i + 1} of {len(pages)} | Est. last message was on")
-            final_embed_list.append(embed)
+            pages.append(embed)
+
         await BaseMenu(
-            source=ListPages(pages=final_embed_list),
+            source=ListPages(pages=pages),
             delete_message_after=False,
             clear_reactions_after=True,
             timeout=60,
@@ -387,10 +324,9 @@ class Tools(commands.Cog):
 
     @commands.command()
     @commands.guild_only()
-    async def joined(self, ctx: commands.Context, *, user: FuzzyMember = None):
+    async def joined(self, ctx: commands.Context, *, member: FuzzyMember = None):
         """Show when you or a user joined this server."""
-        user = user or [ctx.author]
-        user = user[0]
+        user = member[0] if member else ctx.author
         if user.joined_at:
             user_joined = self.format_relative(user.joined_at, "D")
             joined_on = f"{self._humanize_time(user.joined_at)} ago ({user_joined})"
@@ -407,7 +343,6 @@ class Tools(commands.Cog):
     @commands.is_owner()
     async def listguilds(self, ctx: commands.Context):
         """List the guilds [botname] is in."""
-        asciidoc = lambda m: "{}".format(box(m, lang="asciidoc"))
         guilds = sorted(self.bot.guilds, key=lambda g: g.member_count, reverse=True)
         header = box(f"I am in following {len(guilds)} guild{'s' if len(guilds) > 1 else ''}:")
 
@@ -429,19 +364,16 @@ class Tools(commands.Cog):
         await ctx.send(header)
         pages = []
         for page in pagify(final, delims=["\n"], page_length=1950):
-            pages.append(box(page, lang="asciidoc"))
+            pages.append(box(page, lang="apache"))
 
-        controls = {"\N{CROSS MARK}": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
+        controls = {"❌": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
         await menu(ctx, pages, controls)
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_channels=True)
     @commands.command(name="listchannel", aliases=["chlist"])
     async def listchannel(self, ctx: commands.Context):
-        """
-        List the channels of the current server.
-        """
-        asciidoc = lambda m: "{}".format(box(m, lang="asciidoc"))
+        """List the channels of the current server."""
         channels = ctx.guild.channels
         top_channels, category_channels = self.sort_channels(ctx.guild.channels)
 
@@ -451,10 +383,10 @@ class Tools(commands.Cog):
         await ctx.send(f"{ctx.guild.name} has {len(channels)} channel{'s' if len(channels) > 1 else ''}.")
 
         for page in pagify(topChannels_formed, delims=["\n"], shorten_by=16):
-            await ctx.send(asciidoc(page))
+            await ctx.send(box(page, lang="scala"))
 
         for page in pagify(categories_formed, delims=["\n\n"], shorten_by=16):
-            await ctx.send(asciidoc(page))
+            await ctx.send(box(page, lang="scala"))
 
     @commands.guild_only()
     @commands.command()
@@ -477,7 +409,7 @@ class Tools(commands.Cog):
         await ctx.send(embed=e)
 
     @staticmethod
-    def format_relative(dt: datetime.datetime, style: str = None):
+    def format_relative(dt: datetime, style: str = None):
         if style is None:
             return f'<t:{int(dt.timestamp())}>'
         return f'<t:{int(dt.timestamp())}:{style}>'
@@ -485,10 +417,9 @@ class Tools(commands.Cog):
     @commands.command()
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
-    async def perms(self, ctx: commands.Context, *, user: FuzzyMember = None):
+    async def perms(self, ctx: commands.Context, *, member: FuzzyMember = None):
         """Fetch a specific user's permissions."""
-        user = user or [ctx.author]
-        user = user[0]
+        user = member[0] if member else ctx.author
         perms = iter(ctx.channel.permissions_for(user))
         allowed_perms = ""
         denied_perms = ""
@@ -533,13 +464,13 @@ class Tools(commands.Cog):
         rcolor = role.color or discord.Colour(value=0x000000)
         em = discord.Embed(colour=rcolor)
         em.description = f"Role info for {role.mention}\n{extra}"
-        em.set_author(name=str(role.guild.name), icon_url=role.guild.icon_url)
+        em.set_author(name=role.guild.name, icon_url=str(role.guild.icon_url))
         # em.add_field(name="Role Name", value=role.name)
         em.add_field(name="Created", value=f"{self._humanize_time(role.created_at)} ago")
         # em.add_field(name="Users in Role", value=has)
         # em.add_field(name="ID", value=role.id)
-        em.add_field(name="Color", value=role.color)
-        em.add_field(name="Position", value=rolepos)
+        em.add_field(name="Color", value=str(role.color))
+        em.add_field(name="Position", value=str(rolepos))
         if allowed_perms:
             em.add_field(
                 name="Allowed Permissions",
@@ -563,7 +494,7 @@ class Tools(commands.Cog):
             return await ctx.send("This server has no roles.")
 
         async with ctx.typing():
-            pages = []
+            pages: List[Union[discord.Embed, str]] = []
             for i, role in enumerate(roles, start=1):
                 embed = self._role_info(ctx, role, i=i, n=len(roles))
                 pages.append(embed)
@@ -578,32 +509,9 @@ class Tools(commands.Cog):
 
     @commands.command()
     @commands.guild_only()
-    @commands.mod_or_permissions(manage_guild=True)
-    async def rolelist(self, ctx: commands.Context):
-        """Displays the server's roles."""
-        form = "`{rpos:0{zpadding}}` - `{rid}` - `{rcolor}` - {rment} "
-        max_zpadding = max([len(str(r.position)) for r in ctx.guild.roles])
-        rolelist = [
-            form.format(rpos=r.position, zpadding=max_zpadding, rid=r.id, rment=r.mention, rcolor=r.color)
-            for r in ctx.guild.roles
-        ]
-
-        rolelist = sorted(rolelist, reverse=True)
-        rolelist = "\n".join(rolelist)
-        pages = []
-        for page in pagify(rolelist, shorten_by=1400):
-            embed = discord.Embed(
-                description=f"**Total roles:** {len(ctx.guild.roles)}\n\n{page}", colour=await ctx.embed_colour(),
-            )
-            pages.append(embed)
-        await menu(ctx, pages, DEFAULT_CONTROLS)
-
-    @commands.command()
-    @commands.guild_only()
-    async def sharedservers(self, ctx: commands.Context, *, user: FuzzyMember = None):
+    async def sharedservers(self, ctx: commands.Context, *, member: FuzzyMember = None):
         """Shows shared servers a member has with [botname]."""
-        user = user or [ctx.author]
-        user = user[0]
+        user = member[0] if member else ctx.author
         if user.id == ctx.me.id:
             return await ctx.send("Nice try, stalker.")
 
@@ -612,10 +520,7 @@ class Tools(commands.Cog):
         _share = [shared[0],] + [f'{r:>{len(r)+15}}' for r in shared[1:]]
         final = "\n".join(_share)
 
-        data = (
-            f"[Guilds]    :  {seen} shared\n"
-            f"[In Guilds] :  {final}"
-        )
+        data = f"[Guilds]    :  {seen} shared\n" + f"[In Guilds] :  {final}"
 
         for page in pagify(data, page_length=2000):
             await ctx.send(box(page, lang="ini"))
@@ -658,37 +563,41 @@ class Tools(commands.Cog):
             data += f"[Boost Tier]   :  Tier {btier}\n"
             data += f"[Boosts count] :  {boosts} boosts from {psubs} {ppsub}\n"
         data += f"[Upload Limit] :  {upcap} MiB\n"
+
         for page in pagify(data):
             await ctx.send(box(page, lang="ini"))
 
     @commands.command()
-    async def uid(self, ctx: commands.Context, *, partial_name_or_nick: FuzzyMember = None):
-        """Get a member's id from a fuzzy name search."""
-        partial_name_or_nick = partial_name_or_nick or [ctx.author]
+    async def uid(self, ctx: commands.Context, *, member: FuzzyMember = None):
+        """Get a member's ID from a fuzzy name search."""
+        fuzzy_users: List[discord.Member] = member or [ctx.author]
 
         table = []
-        headers = ["User ID", "Username", "Nickname"]
-        for user_obj in partial_name_or_nick:
+        headers = ["UserID", "Username", "Nickname"]
+        for user_obj in fuzzy_users:
             nickname = user_obj.nick or ""
             table.append([user_obj.id, str(user_obj), nickname])
         msg = tabulate(table, headers, tablefmt="simple")
 
         pages = []
-        for page in pagify(msg, delims=["\n"], page_length=1800):
-            pages.append(box(page))
+        for page in pagify(msg, delims=["\n"], page_length=1000):
+            pages.append(box(page, lang="apache"))
 
-        controls = {"\N{CROSS MARK}": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
+        controls = {"❌": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
         await menu(ctx, pages, controls)
 
     @commands.command()
     @commands.guild_only()
-    async def uinfo(self, ctx: commands.Context, *, users: FuzzyMember = None):
-        """Shows user information. Defaults to author."""
-        users = users or [ctx.author]
+    async def uinfo(self, ctx: commands.Context, *, member: FuzzyMember = None):
+        """Shows basic info on a user/server member.
+
+        For more detailed info on a user, try `[p]userinfo` command.
+        """
+        users = member or [ctx.author]
 
         await ctx.trigger_typing()
-        pages = []
-        for user in users:
+        pages: List[str] = []
+        for i, user in enumerate(users, start=1):
             roles = [r.name for r in user.roles if r.name != "@everyone"]
 
             c_acts = [c for c in user.activities if c.type == discord.ActivityType.custom]
@@ -721,10 +630,11 @@ class Tools(commands.Cog):
                 data += f"[Roles]           : {len(roles)}\n"
                 data += f"[In Voice (VC)]   : {user.voice.channel if user.voice is not None else None}\n"
                 data += f"[AFK]             : {user.voice.afk if user.voice is not None else False}\n"
-        pages.append(box(data, lang="ini"))
+            page = f"Page `{i}` of `{len(users)}`:\n"
+            pages.append(page + box(data, lang="ini"))
 
-        controls = {"\N{CROSS MARK}": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
-        await menu(ctx, pages, controls)
+        controls = {"❌": close_menu} if len(pages) == 1 else DEFAULT_CONTROLS
+        await menu(ctx, pages, controls=controls, timeout=90.0)
 
     @commands.command()
     @commands.is_owner()
@@ -755,24 +665,23 @@ class Tools(commands.Cog):
             it_is = discord.utils.get(look_at, id=id)
 
         if isinstance(it_is, discord.Guild):
-            await ctx.invoke(self.sinfo, it_is)
+            await ctx.invoke(self.bot.get_command('sinfo'), guild=it_is)
         elif isinstance(it_is, discord.abc.GuildChannel):
-            await ctx.invoke(self.chinfo, id)
-        elif isinstance(it_is, (discord.User, discord.Member)):
-            await ctx.invoke(self.uinfo, it_is)
+            await ctx.invoke(self.bot.get_command('cinfo'), channel=id)
+        elif isinstance(it_is, discord.abc.User):
+            await ctx.invoke(self.bot.get_command('uinfo'), member=[it_is])
         elif isinstance(it_is, discord.Role):
-            await ctx.invoke(self.rinfo, rolename=it_is)
+            await ctx.invoke(self.bot.get_command('rinfo'), role=it_is)
         elif isinstance(it_is, discord.Emoji):
-            await ctx.invoke(self.einfo, it_is)
+            await ctx.invoke(self.bot.get_command('einfo'), emoji=it_is)
         else:
             await ctx.send("I could not find anything for this ID.")
 
     @staticmethod
     def _humanize_time(time):
-        dt1 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-        dt2 = time
+        dt1 = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        diff = relativedelta.relativedelta(dt1, dt2)
+        diff = relativedelta.relativedelta(dt1, time)
 
         yrs, mths, days = (diff.years, diff.months, diff.days)
         hrs, mins, secs = (diff.hours, diff.minutes, diff.seconds)
