@@ -1,23 +1,37 @@
+from datetime import datetime, timedelta
+
 import discord
-import pytz
-
-from datetime import datetime
-from typing import Literal
-
+from pytz import all_timezones, country_timezones, timezone
+from rapidfuzz import process
 from redbot.core import Config, commands
+from redbot.core.commands import BadArgument, Converter
 
-from .converter import FuzzyMember, TimezoneConverter
+from serverstats.converters import FuzzyMember
+
+
+class TimezoneConverter(Converter):
+    """Timezone Converter helper class."""
+
+    async def convert(self, ctx: commands.Context, argument: str) -> str:
+        fuzzy = process.extractOne(argument, all_timezones, score_cutoff=90)
+        if not fuzzy:
+            raise BadArgument(
+                "That doesn't look like a valid timezone or a major city name. If you're having"
+                " difficulty, got to https://whatismyti.me to quickly get your timezone."
+            )
+
+        return fuzzy[0]
 
 
 class Timezone(commands.Cog):
-    """Gets times across the world..."""
+    """Gets times of other users or across the world..."""
 
     __version__ = "2.1.0"
 
-    async def red_delete_data_for_user(
-        self, *, requester: Literal["discord", "owner", "user", "user_strict"], user_id: int,
-    ):
-        await self.config.user_from_id(user_id).clear()
+    def format_help_for_context(self, ctx: commands.Context) -> str:
+        """Thanks Sinbad!"""
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\n\nCog Version: {self.__version__}"
 
     def __init__(self, bot):
         self.bot = bot
@@ -25,11 +39,11 @@ class Timezone(commands.Cog):
         default_user = {"usertime": None}
         self.config.register_user(**default_user)
 
-    async def get_usertime(self, user: discord.User):
+    async def get_usertime(self, user: discord.abc.User):
         tz = None
         usertime = await self.config.user(user).usertime()
         if usertime:
-            tz = pytz.timezone(usertime)
+            tz = timezone(usertime)
 
         return usertime, tz
 
@@ -41,21 +55,36 @@ class Timezone(commands.Cog):
         For the list of supported timezones, see here:
         https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
         """
-        user = user or ctx.author
+        member: discord.Member = user[0] if user else ctx.author
 
-        if user.bot:
+        if member.bot:
             return await ctx.send("Bots technically do not have a timezone. LOL!")
 
-        usertime, tz = await self.get_usertime(user)
-        who = f"**{user}**" if user is not ctx.author else "You"
+        usertime, user_tz = await self.get_usertime(member)
+        who = f"**{member}**" if member.id != ctx.author.id else "You"
         if not usertime:
-            return await ctx.send(f"{who} need to set a timezone first!")
+            return await ctx.send(
+                f"{who} need to set a timezone first with `;mytime continent/city` command!"
+            )
 
-        time = datetime.now(tz)
-        fmt = "**%I:%M %p (%Z)** on **%a, %d %B, %Y**"
-        time = time.strftime(fmt)
-        to_send = f"The current time for **{user.name}** is {str(time)}."
-        await ctx.send(to_send)
+        time = datetime.now(user_tz)
+        strf_time = time.strftime("**%I:%M %p** (%Z) on `%d/%m/%Y`")
+        to_send = f"**{member.name}**'s current time is {strf_time}"
+
+        cmduser_time, cmduser_tz = await self.get_usertime(ctx.author)
+        if cmduser_time and cmduser_tz and member.id != ctx.author.id:
+            cmduser_now = datetime.now(cmduser_tz).utcoffset()
+            assert isinstance(cmduser_now, timedelta)
+            cmduser_diff = cmduser_now.total_seconds() / 60 / 60
+            user_diff = time.utcoffset().total_seconds() / 60 / 60
+            time_diff = abs(cmduser_diff - user_diff)
+            time_amt = "same timezone as" if time_diff == 0 else f"**{time_diff}h"
+            pos = "ahead** of" if cmduser_diff < user_diff else "behind**"
+            pos_text = " you" if time_diff == 0 else f" {pos} you"
+            to_send += f" ({time_amt}{pos_text})"
+
+        mentions = discord.AllowedMentions.none()
+        await ctx.send(to_send, allowed_mentions=mentions)
 
     @time.command()
     async def tz(self, ctx, *, tz: TimezoneConverter = None):
@@ -65,90 +94,60 @@ class Timezone(commands.Cog):
             time = datetime.now()
             return await ctx.send(f"My current system time is {time.strftime(fmt)}")
 
-        time = datetime.now(pytz.timezone(tz))
+        time = datetime.now(timezone(tz))
         return await ctx.send(time.strftime(fmt))
 
     @time.command()
     async def iso(self, ctx, code: str):
-        """
-        Looks up ISO3166 country code and gives you supported timezones.
+        """Looks up ISO3166 country code and gives you supported timezones.
 
         List of ISO3166 country codes:
         https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes
         """
-        exist = True if code in pytz.country_timezones else False
+        exist = True if code in country_timezones else False
         if exist:
-            tz = iter(pytz.country_timezones(code))
+            tz = iter(country_timezones(code))
             xx = "\n‣ ".join(str(x) for x in sorted(tz))
             msg = (
                 f"Supported timezones for **{code}:**\n\n‣ {xx}\n\n"
-                + f"Use `{ctx.clean_prefix}time tz Continent/City` "
-                + "to display the current time in that timezone."
+                f"Use `{ctx.clean_prefix}time tz Continent/City` to show time in that timezone."
             )
-            return await ctx.send(msg)
+            await ctx.send(msg)
         else:
             await ctx.maybe_send_embed(
                 "You need to provide a valid [ISO 3166 country code]"
-                + "(https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes)."
+                "(https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes)."
             )
 
-    @time.command()
-    async def me(self, ctx, *, tz: TimezoneConverter = None):
+    @commands.command()
+    async def mytime(self, ctx, *, tz: TimezoneConverter = None):
         """
         Sets or returns your timezone if already set.
 
         You can set your time/timezone with following:
 
-        Usage: [p]time me Continent/City
+        Usage: `[p]mytime Continent/City`
         Pro Tip: Easily get your time(zone) from https://whatismyti.me to use with this command.
         """
         if tz is None:
             usertime, tz = await self.get_usertime(ctx.author)
             if not usertime:
-                return await ctx.send(f"You haven't set your timezone! See command help on how to.")
+                return await ctx.send_help()
 
             time = datetime.now(tz)
-            time = time.strftime("**%I:%M %p (%Z)** on **%a, %d %B, %Y**")
-            msg = f"**{ctx.author.name}**, your current time is {time}."
+            strf_time = time.strftime("**%I:%M %p (%Z)** on **%a, %d %B, %Y**")
+            msg = f"**{ctx.author.name}**, your current time is {strf_time}."
             return await ctx.send(msg)
         else:
             await self.config.user(ctx.author).usertime.set(tz.title())
             await ctx.send(f"Successfully set your timezone to **{tz}**.")
 
-    @time.command()
+    @commands.command()
+    @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
-    async def set(self, ctx, user: FuzzyMember, *, tz: TimezoneConverter):
+    async def timeset(self, ctx, user: discord.Member, *, tz: TimezoneConverter):
         """Allows the server mods/admins to set a member's timezone."""
         if user.bot:
-            return await ctx.send("Nice try LOL, but bots technically do not have a timezone!")
+            return await ctx.send("Nice try, bots technically do not have a timezone!")
         await self.config.user(user).usertime.set(tz.title())
         await ctx.send(f"Successfully set **{user.name}**'s timezone to **{tz.title()}**.")
-
-    @time.command()
-    async def compare(self, ctx, *, user: FuzzyMember):
-        """Compare your saved timezone with another user's timezone."""
-        usertime, user_tz = await self.get_usertime(ctx.author)
-        if not usertime:
-            return await ctx.send(f"**{ctx.author.name}**, you haven't set your timezone!")
-        othertime, other_tz = await self.get_usertime(user)
-        if not othertime:
-            return await ctx.send(f"**{user.name}** haven't set their timezone!")
-
-        user_now = datetime.now(user_tz)
-        user_diff = user_now.utcoffset().total_seconds() / 60 / 60
-        other_now = datetime.now(other_tz)
-        other_diff = other_now.utcoffset().total_seconds() / 60 / 60
-        time_diff = abs(user_diff - other_diff)
-        fmt = "**%I:%M %p (%Z)** on **%a, %d %B, %Y**"
-        other_time = other_now.strftime(fmt)
-        plural = "" if time_diff == 1 else "s"
-        time_amt = "the same timezone as you" if time_diff == 0 else f"**{time_diff} hour{plural}**"
-        pos = "__ahead__ of" if user_diff < other_diff else "__behind__"
-        pos_text = "" if time_diff == 0 else f" {pos} you"
-        msg = f"The current time for **{user.name}** is {other_time}, which is {time_amt}{pos_text}."
-        await ctx.send(msg)
-
-    @time.command(hidden=True)
-    async def version(self, ctx):
-        """Show the cog version."""
-        await ctx.send(f"Timezone Cog version: {self.__version__}.")
