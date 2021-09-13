@@ -235,16 +235,13 @@ class Tools(commands.Cog):
         with sps(discord.HTTPException, discord.NotFound):
             await awaiter.delete()
 
-        temp_pages = []
+        temp_pages = list(pagify(final, delims=["\n"], page_length=1000))
         sumif = len([m for m in guild.members if role in m.roles])
-        for page in pagify(final, delims=["\n"], page_length=1000):
-            embed = discord.Embed(colour=role.color)
-            embed.description = f"**{sumif}** users have {role.mention} role.\n\n{page}"
-
-            temp_pages.append(embed)
 
         pages: List[Union[discord.Embed, str]] = []
-        for i, embed in enumerate(temp_pages, start=1):
+        for i, page in enumerate(temp_pages, start=1):
+            embed = discord.Embed(colour=role.color)
+            embed.description = f"**{sumif}** users have {role.mention} role.\n\n{page}"
             embed.set_footer(text=f"Page {i} of {len(temp_pages)} | Role ID: {role.id}")
             pages.append(embed)
 
@@ -291,19 +288,17 @@ class Tools(commands.Cog):
         ]
         final = "\n".join(all_forms)
 
-        temp_pages = []
-        for page in pagify(final, delims=["\n"], page_length=1000):
+        temp_pages = list(pagify(final, delims=["\n"], page_length=1000))
+
+        pages: List[Union[discord.Embed, str]] = []
+        for i, page in enumerate(temp_pages, start=1):
             embed = discord.Embed(
                 description=f"Below **{len(members)}** user(s) have access to **#{target.name}**\n\n{page}",
                 colour=await ctx.embed_colour(),
             )
             embed.set_author(name=str(target.guild.name), icon_url=target.guild.icon_url)
             embed.timestamp = discord.utils.snowflake_time(target.last_message_id)
-            temp_pages.append(embed)
-
-        pages: List[Union[discord.Embed, str]] = []
-        for i, embed in enumerate(temp_pages, start=1):
-            embed.set_footer(text=f"Page {i + 1} of {len(pages)} | Est. last message was on")
+            embed.set_footer(text=f"Page {i} of {len(temp_pages)} | Last message was on")
             pages.append(embed)
 
         await BaseMenu(
@@ -555,7 +550,6 @@ class Tools(commands.Cog):
         data += f"[Users]        :  {total} ( {humans} humans + {robots} bots )\n\n"
         data += f"[Categories]   :  {categories}\n"
         data += f"[Channels]     :  {text_channels} text + {voice_channels} voice\n\n"
-        # data += f"[Voice]        :  {len(voice_channels)} channels\n"
         data += f"[Roles]        :  {len(guild.roles)}\n"
         data += f"[Emojis]       :  {len(guild.emojis)} ({static} static + {animated} animated)\n"
         data += f"[2FA Admin]    :  {mfa}\n"
